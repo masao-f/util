@@ -10,7 +10,9 @@
 
 (defparameter *column-names*
   '(("見積ヘッダ" "物件名" BUKKENMEI)
+    ("見積ヘッダ" "見積依頼担当者" MITSUMORIIRAITANTOUSHA)
     ("発注ヘッダ" "物件名" BUKKENMEI)
+    ("発注ヘッダ" "購買物件" KOUBAIBUKKEN)
     ("発注ヘッダ" "物件種類" BUKKENSHURUI)
     ("検収ヘッダ" "物件名" BUKKENMEI)
     ("検収ヘッダ" "検収予定日" KENSHUUYOTEIBI)
@@ -74,7 +76,7 @@
 	       (setf mode 3))
 	      ((equal "WHERE" clause)
 	       (print "find WHERE")
-	       (setf wa (cons "todo" wa))
+	       (setf wa (cons (generate-where-area line) wa))
 	       (setf mode 4))
 	      ((or (equal "ORDER" clause)
 		   (equal "GROUP" clause))
@@ -86,6 +88,7 @@
 			(setf mode 1.1)))
 		   (1.1 (setf sa (cons (generate-select-area line mode) sa)))
 		   (3 (setf ja (cons (generate-join-area line) ja)))
+		   (4 (setf wa (cons (generate-where-area line) wa)))
 		   (5 (setf oa (cons (generate-order-group-area line) oa)))
 		   )))))
     (list sa fa ja wa oa)))
@@ -97,8 +100,8 @@
     clause))
   
 (defun generate-select-area (line mode)
-  (let ((tname (parse-get-table-name select line))
-	(cname (parse-get-table-short-name select line)))
+  (let ((tname (parse-get-table-short-name select line))
+	(cname (parse-get-column-name select line)))
     (case mode
       (1 (format nil "~&~A.~A " tname cname))
       (1.1 (format nil "~&,~A.~A " tname cname)))))
@@ -157,24 +160,30 @@
       ("[,\\s*]*(\\S+)\\.(\\S+) = (\\S+)\\.(\\S+)" (string-trim " " line))
     (list table column table2 column2)))
 
-;todo
-(defun generate-where-line (line)
-  (let ((table (parse-where-line line)))
-    (ppcre:regex-replace "WHERE\\s+(\\S+).(\\S+) = (\\S+).(\\S+) "
-			 line
-			 (format nil
-				 "WHERE ~A.~A = ~A.~A "
-				 (get-table-name table *table-names*)
-				 (get-table-short-name table *table-names*)
-				 "todo"
-				 "todo"))))
-				      		 
+(defun generate-where-area (line)
+  (let* ((cnt (ppcre:count-matches "WHERE" line))
+	 (res (parse-where-line line))
+	 (t1 (first res))
+	 (c1 (second res))
+	 (t2 (third res))
+	 (c2 (fourth res)))
+    (cond ((= 1 cnt)
+	   (format nil "WHERE ~A.~A = ~A.~A "
+	    (get-table-short-name t1 *table-names*)
+	    (get-column-name t1 c1  *column-names*)
+	    (get-table-short-name t2 *table-names*)
+	    (get-column-name t2 c2  *column-names*)))
+	  (t (format nil "AND ~A.~A = ~A.~A "
+		     (get-table-short-name t1 *table-names*)
+		     (get-column-name t1 c1  *column-names*)
+		     (get-table-short-name t2 *table-names*)
+		     (get-column-name t2 c2  *column-names*))))))
+    
 (defun parse-where-line (line)
   (ppcre:register-groups-bind
       (t1 c1 t2 c2)
-      ("WHERE\\s+(\\S+).(\\S+) = (\\S+).(\\S+)" (string-trim " "line))
+      ("[,\\s]+(\\S+)\\.(\\S+)\\s+=\\s+(\\S+)\\.(\\S+)" (string-trim " "line))
     (list t1 c1 t2 c2)))
-
 
 (defun generate-order-group-area (line)
   (let* ((tmp (parse-order-group-area line))
@@ -189,22 +198,34 @@
     (list table column)))
 
 (defun get-table-name (table db)
-  (second (assoc table db :test #'string-equal)))
+  (let ((res (second (assoc table db :test #'string-equal))))
+    (if res
+	res
+	table)))
 
 (defun get-table-short-name (table db)
-  (third (assoc table db :test #'string-equal)))
+  (let ((res (third (assoc table db :test #'string-equal))))
+    (if res
+	res
+	table)))
 
 (defun get-column-name (table column db)
 ;  (find '物件種類 (remove-if-not (lambda (x) (eq (car x) '発注ヘッダ)) *column-names*) :key #'cadr)
-  (third (find column (remove-if-not #'(lambda (x) (equal (car x) table))
-				     *column-names*)
-	       :key #'cadr :test #'string-equal)))
+  (let ((res (third (find column (remove-if-not
+				  #'(lambda (x) (equal (car x) table))
+				  db)
+			  :key #'cadr :test #'string-equal))))
+    (if res
+	res
+	column)))
 
 ;購買業務.物件名 のようなペアを返す
 (defun get-tshort-column-name (table column tdb cdb)
   (let* ((tname (get-table-short-name table tdb))
 	 (cname (get-column-name table column cdb)))
-    (list tname cname)))
+    (if (and tname cname)
+	(list tname cname)
+	(list table column))))
 
 ;mode: select, order, group
 ;ex:購買業務.物件名 のような形が1行に1回だけのエリア
@@ -218,6 +239,12 @@
     `(let ((table (first (,fname ,line))))
        (get-table-short-name table *table-names*))))
 
+(defmacro parse-get-column-name (mode line)
+  (let ((fname (intern (format nil "PARSE-~A-AREA" mode))))
+    `(let ((table (first (,fname ,line)))
+	   (column (second (,fname ,line))))
+       (get-column-name table column *column-names*))))
+
 
 
 (defun print-sql ()
@@ -227,7 +254,8 @@
   (print (first *from-area*))
   (dolist (line (reverse *join-area*))
     (print line))
-  (print *where-area*)
+  (dolist (line (reverse *where-area*))
+    (print line))
   (dolist (line (reverse *order-group-area*))    
     (print line)))
 
@@ -241,7 +269,7 @@
     (write-line (first *from-area*) output)
     (dolist (line (reverse *join-area*))
       (write-line line output))
-    (write-line (first *where-area*) output)
+    (dolist (line (reverse *where-area*))
+      (write-line line output))    
     (dolist (line (reverse *order-group-area*))
       (write-line line output))))
-
